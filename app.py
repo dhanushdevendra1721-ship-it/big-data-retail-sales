@@ -2,6 +2,7 @@
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 # --------------------------------------------------
 # PAGE CONFIGURATION
@@ -23,47 +24,84 @@ st.write(
     "Hadoop Distributed File System (HDFS) storage, and PySpark analysis."
 )
 
-st.success(
-    "Hadoop HDFS storage and PySpark retail analysis "
-    "were demonstrated in Google Colab."
-)
-
-st.info(
-    "The dashboard below uses a built-in sample dataset and runs "
-    "independently. It does not connect directly to the temporary "
-    "Google Colab Hadoop or Spark session."
-)
-
 # --------------------------------------------------
-# SAMPLE RETAIL SALES DATA
+# LOAD SPARK-PROCESSED DATA
 # --------------------------------------------------
-data = {
-    "Date": [
-        "2026-01-05", "2026-01-12",
-        "2026-02-03", "2026-02-15",
-        "2026-03-04", "2026-03-18",
-        "2026-04-06", "2026-04-20",
-        "2026-05-08", "2026-05-21"
-    ],
-    "Product": [
-        "Rice", "Sugar", "Cooking Oil", "Rice",
-        "Wheat", "Cooking Oil", "Sugar", "Wheat",
-        "Rice", "Cooking Oil"
-    ],
-    "Category": ["Grocery"] * 10,
-    "Quantity": [20, 15, 10, 25, 18, 12, 22, 14, 30, 16],
-    "Unit_Price": [60, 45, 150, 60, 40, 150, 45, 40, 60, 150]
-}
+SPARK_FILE = Path(__file__).parent / "spark_retail_sales_results.csv"
+RAW_FILE = Path(__file__).parent / "retail_sales.csv"
 
-df = pd.DataFrame(data)
-df["Date"] = pd.to_datetime(df["Date"])
-df["Revenue"] = df["Quantity"] * df["Unit_Price"]
+@st.cache_data
+def load_sales_data():
+    if SPARK_FILE.exists():
+        data = pd.read_csv(SPARK_FILE)
+        source = "Spark-generated results CSV"
+    elif RAW_FILE.exists():
+        data = pd.read_csv(RAW_FILE)
+        source = "Raw retail sales CSV (fallback)"
+    else:
+        return pd.DataFrame(), "No data file found"
+
+    required_columns = [
+        "Date", "Product", "Category",
+        "Quantity", "Unit_Price"
+    ]
+
+    missing = [c for c in required_columns if c not in data.columns]
+    if missing:
+        raise ValueError(
+            "Missing required CSV columns: " + ", ".join(missing)
+        )
+
+    data["Date"] = pd.to_datetime(data["Date"], errors="coerce")
+    data["Quantity"] = pd.to_numeric(data["Quantity"], errors="coerce")
+    data["Unit_Price"] = pd.to_numeric(data["Unit_Price"], errors="coerce")
+    data = data.dropna(
+        subset=["Date", "Product", "Quantity", "Unit_Price"]
+    ).copy()
+
+    # Use Spark's Revenue column when present; otherwise calculate it.
+    if "Revenue" in data.columns:
+        data["Revenue"] = pd.to_numeric(data["Revenue"], errors="coerce")
+        data["Revenue"] = data["Revenue"].fillna(
+            data["Quantity"] * data["Unit_Price"]
+        )
+    else:
+        data["Revenue"] = data["Quantity"] * data["Unit_Price"]
+
+    return data, source
+
+try:
+    df, data_source = load_sales_data()
+except Exception as error:
+    st.error(f"Unable to load sales data: {error}")
+    st.stop()
+
+if df.empty:
+    st.error(
+        "No sales data was found. Please add retail_sales.csv "
+        "or spark_retail_sales_results.csv to the project repository."
+    )
+    st.stop()
+
+st.success(f"Sales data loaded from: {data_source}")
+
+if SPARK_FILE.exists():
+    st.info(
+        "The dashboard is displaying results exported from a Spark "
+        "processing run in Google Colab. Spark is not executing live "
+        "inside this Streamlit deployment."
+    )
+else:
+    st.warning(
+        "The Spark results file was not found. The dashboard is using "
+        "the raw CSV fallback; these records have not been processed "
+        "by Spark at dashboard runtime."
+    )
 
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
 st.sidebar.header("Dashboard Controls")
-
 st.sidebar.write("Project: Retail Sales Analytics")
 st.sidebar.write("Technologies: Python, Pandas, PySpark, Hadoop")
 
@@ -77,9 +115,6 @@ date_range = st.sidebar.date_input(
     max_value=date_max
 )
 
-# --------------------------------------------------
-# FILTER DATA
-# --------------------------------------------------
 filtered_df = df.copy()
 
 if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
@@ -91,10 +126,7 @@ if isinstance(date_range, (tuple, list)) and len(date_range) == 2:
 
 products = ["All"] + sorted(filtered_df["Product"].unique().tolist())
 
-selected_product = st.sidebar.selectbox(
-    "Select product",
-    products
-)
+selected_product = st.sidebar.selectbox("Select product", products)
 
 if selected_product != "All":
     filtered_df = filtered_df[
@@ -110,19 +142,14 @@ total_revenue = filtered_df["Revenue"].sum()
 total_units = filtered_df["Quantity"].sum()
 total_records = len(filtered_df)
 
-if not filtered_df.empty:
-    top_product = (
-        filtered_df.groupby("Product")["Quantity"]
-        .sum()
-        .idxmax()
-    )
-else:
-    top_product = "N/A"
+top_product = (
+    filtered_df.groupby("Product")["Quantity"].sum().idxmax()
+    if not filtered_df.empty else "N/A"
+)
 
 c1, c2, c3, c4 = st.columns(4)
-
 c1.metric("Total Revenue", f"₹{total_revenue:,.0f}")
-c2.metric("Units Sold", f"{total_units:,}")
+c2.metric("Units Sold", f"{total_units:,.0f}")
 c3.metric("Sales Records", f"{total_records}")
 c4.metric("Top Product", top_product)
 
@@ -134,11 +161,7 @@ st.header("🔎 Explore Retail Sales Data")
 display_df = filtered_df.copy()
 display_df["Date"] = display_df["Date"].dt.strftime("%Y-%m-%d")
 
-st.dataframe(
-    display_df,
-    use_container_width=True,
-    hide_index=True
-)
+st.dataframe(display_df, use_container_width=True, hide_index=True)
 
 # --------------------------------------------------
 # PRODUCT-WISE ANALYTICS
@@ -157,7 +180,11 @@ if not filtered_df.empty:
         .reset_index()
     )
 
-    st.dataframe(product_summary, use_container_width=True, hide_index=True)
+    st.dataframe(
+        product_summary,
+        use_container_width=True,
+        hide_index=True
+    )
 
     fig, ax = plt.subplots(figsize=(8, 4))
     chart_data = product_summary.sort_values("Total_Revenue")
@@ -181,9 +208,7 @@ if not filtered_df.empty:
     monthly["Month"] = monthly["Date"].dt.to_period("M").astype(str)
 
     monthly_summary = (
-        monthly.groupby("Month")["Revenue"]
-        .sum()
-        .reset_index()
+        monthly.groupby("Month")["Revenue"].sum().reset_index()
     )
 
     fig2, ax2 = plt.subplots(figsize=(8, 4))
@@ -201,31 +226,44 @@ if not filtered_df.empty:
     plt.close(fig2)
 
 # --------------------------------------------------
-# SPARK-STYLE SUMMARY ANALYTICS
+# REVENUE AND QUANTITY STATISTICS
 # --------------------------------------------------
 st.header("⚡ Big Data Analytics Summary")
 
 if not filtered_df.empty:
-    st.write(
-        "These summary operations use Pandas in the deployed dashboard. "
-        "Equivalent retail analysis was also performed with PySpark in Colab."
-    )
-
     a, b = st.columns(2)
 
     with a:
         st.subheader("Revenue Statistics")
         st.write(f"**Total revenue:** ₹{total_revenue:,.0f}")
-        st.write(f"**Average record revenue:** ₹{filtered_df['Revenue'].mean():,.2f}")
-        st.write(f"**Highest record revenue:** ₹{filtered_df['Revenue'].max():,.0f}")
-        st.write(f"**Lowest record revenue:** ₹{filtered_df['Revenue'].min():,.0f}")
+        st.write(
+            f"**Average record revenue:** "
+            f"₹{filtered_df['Revenue'].mean():,.2f}"
+        )
+        st.write(
+            f"**Highest record revenue:** "
+            f"₹{filtered_df['Revenue'].max():,.0f}"
+        )
+        st.write(
+            f"**Lowest record revenue:** "
+            f"₹{filtered_df['Revenue'].min():,.0f}"
+        )
 
     with b:
         st.subheader("Quantity Statistics")
-        st.write(f"**Total units sold:** {total_units:,}")
-        st.write(f"**Average quantity per record:** {filtered_df['Quantity'].mean():,.2f}")
-        st.write(f"**Highest quantity in a record:** {filtered_df['Quantity'].max():,}")
-        st.write(f"**Products represented:** {filtered_df['Product'].nunique()}")
+        st.write(f"**Total units sold:** {total_units:,.0f}")
+        st.write(
+            f"**Average quantity per record:** "
+            f"{filtered_df['Quantity'].mean():,.2f}"
+        )
+        st.write(
+            f"**Highest quantity in a record:** "
+            f"{filtered_df['Quantity'].max():,.0f}"
+        )
+        st.write(
+            f"**Products represented:** "
+            f"{filtered_df['Product'].nunique()}"
+        )
 
 # --------------------------------------------------
 # BUSINESS INSIGHTS
@@ -238,21 +276,21 @@ if not filtered_df.empty:
         .sum()
         .sort_values(ascending=False)
     )
-
     quantity_ranking = (
         filtered_df.groupby("Product")["Quantity"]
         .sum()
         .sort_values(ascending=False)
     )
 
-    st.write(f"- Total revenue for the selected data: ₹{total_revenue:,.0f}.")
-    st.write(f"- Total quantity sold: {total_units:,} units.")
-    st.write(f"- Best-selling product by quantity: {quantity_ranking.index[0]}.")
-    st.write(f"- Highest-revenue product: {revenue_ranking.index[0]}.")
+    st.write(f"- Total revenue for selected data: ₹{total_revenue:,.0f}.")
+    st.write(f"- Total quantity sold: {total_units:,.0f} units.")
     st.write(
-        "- Use the sidebar filters to explore different products "
-        "and date ranges."
+        f"- Best-selling product by quantity: {quantity_ranking.index[0]}."
     )
+    st.write(
+        f"- Highest-revenue product: {revenue_ranking.index[0]}."
+    )
+    st.write("- Use the sidebar filters to explore the sales data.")
 else:
     st.write("Adjust the filters to see business insights.")
 
@@ -262,28 +300,28 @@ else:
 st.header("🗄️ Hadoop and Spark Workflow")
 
 st.markdown("""
-1. **Retail data preparation:** Created a sample retail sales CSV file.
-2. **Hadoop HDFS:** Configured HDFS and stored the CSV file in the `/retail` directory.
-3. **Apache Spark:** Read the sales CSV from HDFS using PySpark.
-4. **Data analysis:** Calculated total revenue, units sold, and product-wise revenue.
-5. **Results export:** Saved the product summary to a CSV file.
-6. **Streamlit dashboard:** Displays sales metrics, charts, and business insights using its built-in sample dataset.
+1. **Retail data preparation:** Prepared retail sales data as a CSV file.
+2. **Hadoop HDFS:** HDFS storage was demonstrated separately in Google Colab.
+3. **Apache Spark:** PySpark read and processed the sales CSV in Colab.
+4. **Data analysis:** Spark calculated revenue and quantity totals.
+5. **Results export:** Spark output was exported as a CSV file.
+6. **Streamlit dashboard:** Displays the exported Spark results and provides
+   interactive filters, charts, and business insights.
 """)
 
 st.warning(
-    "The Hadoop and Spark steps above describe the workflow demonstrated "
-    "in Colab. The deployed dashboard does not currently execute Spark "
-    "jobs or read directly from HDFS."
+    "The deployed dashboard reads a previously exported Spark results CSV. "
+    "It does not start Spark jobs or connect directly to HDFS at runtime."
 )
 
 # --------------------------------------------------
 # FOOTER
 # --------------------------------------------------
 st.divider()
-
 st.caption(
     "Developed by Dhanush Devendra | TY BSc Information Technology"
 )
 st.caption(
-    "Technologies: Python • Pandas • Matplotlib • Apache Hadoop • Apache Spark • Streamlit"
+    "Technologies: Python • Pandas • Matplotlib • Apache Hadoop • "
+    "Apache Spark • Streamlit"
 )
