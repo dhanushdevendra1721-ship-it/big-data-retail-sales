@@ -1,0 +1,11 @@
+Date,Product,Category,Quantity,Unit_Price,Revenue
+2026-01-05,Rice,Grocery,20,60,1200
+2026-01-12,Sugar,Grocery,15,45,675
+2026-02-03,Cooking Oil,Grocery,10,150,1500
+2026-02-15,Rice,Grocery,25,60,1500
+2026-03-04,Wheat,Grocery,18,40,720
+2026-03-18,Cooking Oil,Grocery,12,150,1800
+2026-04-06,Sugar,Grocery,22,45,990
+2026-04-20,Wheat,Grocery,14,40,560
+2026-05-08,Rice,Grocery,30,60,1800
+2026-05-21,Cooking Oil,Grocery,16,150,2400
